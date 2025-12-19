@@ -1,0 +1,37 @@
+# 所需Arduino库列表
+
+请在Arduino IDE的库管理器中安装以下库：
+
+1. **Blynk** (版本 1.2.0)
+   - 作者：Volodymyr Shymanskyy
+   - 用于物联网连接和手机APP控制
+
+2. **DHT sensor library**
+   - 作者：Adafruit
+   - 用于AM2302温湿度传感器
+
+3. **Adafruit GFX Library**
+   - 作者：Adafruit
+   - 图形显示库
+
+4. **Adafruit SSD1306**
+   - 作者：Adafruit
+   - OLED显示屏驱动
+
+5. **WiFiManager**
+   - 作者：tzapu
+   - 用于WiFi自动配置
+
+## 安装方法
+
+1. 打开Arduino IDE
+2. 工具 → 管理库
+3. 搜索库名称
+4. 点击"安装"按钮
+
+## 注意事项
+
+- 确保安装最新版本的库
+- 如果遇到编译错误，尝试更新所有库
+- ESP32-C3需要ESP32开发板支持包
+
