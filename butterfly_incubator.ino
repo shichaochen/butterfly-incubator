@@ -2,12 +2,14 @@
  * 蝴蝶孵化箱控制系统
  * 硬件：ESP32-C3, AM2302, OLED SSD1306, 继电器x2, 加热垫, 风扇, 加湿器
  * 功能：温湿度控制、OLED显示曲线、Blynk手机APP控制、按键本地设置
+ * 作者：Shichao Chen  12/20/2025
  */
 
 #define BLYNK_PRINT Serial
-#define BLYNK_TEMPLATE_ID "YOUR_TEMPLATE_ID"
-#define BLYNK_DEVICE_NAME "Butterfly Incubator"
-#define BLYNK_AUTH_TOKEN "YOUR_AUTH_TOKEN"
+#define BLYNK_TEMPLATE_ID "TMPL6-RWgnQzO"
+#define BLYNK_TEMPLATE_NAME "Butterfly Incubator"
+#define BLYNK_DEVICE_NAME "ButterflyIncubator"
+#define BLYNK_AUTH_TOKEN "ygx5Lxn7vKw-1d2ZODzLS9NavCO5TyiJ"
 
 #include <WiFi.h>
 #include <WiFiManager.h>
@@ -69,18 +71,26 @@ bool btnDownState = false;
 bool lastBtnSetState = false;
 bool lastBtnUpState = false;
 bool lastBtnDownState = false;
-unsigned long lastDebounceTime = 0;
+unsigned long lastDebounceTimeSet = 0;
+unsigned long lastDebounceTimeUp = 0;
+unsigned long lastDebounceTimeDown = 0;
 const unsigned long DEBOUNCE_DELAY = 50;
+bool btnSetPressed = false;
+bool btnUpPressed = false;
+bool btnDownPressed = false;
 
 // ========== 设置模式 ==========
 enum SettingMode {
   MODE_NORMAL,
   MODE_SET_TEMP,
-  MODE_SET_HUMIDITY
+  MODE_SET_HUMIDITY,
+  MODE_SAVED
 };
 SettingMode currentMode = MODE_NORMAL;
 unsigned long modeTimeout = 0;
-const unsigned long MODE_TIMEOUT_MS = 10000; // 10秒无操作退出设置模式
+const unsigned long MODE_TIMEOUT_MS = 15000; // 15秒无操作退出设置模式
+unsigned long savedModeTimeout = 0;
+const unsigned long SAVED_MODE_DURATION = 2000; // 保存提示显示2秒
 
 // ========== 定时器 ==========
 BlynkTimer timer;
@@ -141,15 +151,15 @@ void setup() {
   // 初始化OLED
   Wire.begin(SDA_PIN, SCL_PIN);
   if (!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
-    Serial.println(F("SSD1306分配失败"));
+    Serial.println(F("SSD1306 Init Error"));
     for (;;);
   }
   display.clearDisplay();
   display.setTextSize(1);
   display.setTextColor(SSD1306_WHITE);
   display.setCursor(0, 0);
-  display.println(F("蝴蝶孵化箱"));
-  display.println(F("初始化中..."));
+  display.println(F("Butterfly Incubator"));
+  display.println(F("Initializing..."));
   display.display();
   
   // 初始化DHT传感器
@@ -170,17 +180,17 @@ void setup() {
   // 显示WiFi配置提示
   display.clearDisplay();
   display.setCursor(0, 0);
-  display.println(F("WiFi配置中..."));
-  display.println(F("热点: ButterflyIncubator"));
-  display.println(F("访问: 192.168.4.1"));
+  display.println(F("WiFi Config..."));
+  display.println(F("AP: ButterflyIncubator"));
+  display.println(F("Visit: 192.168.4.1"));
   display.display();
   
   if (!wifiManager.autoConnect("ButterflyIncubator")) {
     Serial.println("WiFi连接失败，重启中...");
     display.clearDisplay();
     display.setCursor(0, 0);
-    display.println(F("WiFi连接失败"));
-    display.println(F("3秒后重启..."));
+    display.println(F("WiFi Failed"));
+    display.println(F("Restart in 3s..."));
     display.display();
     delay(3000);
     ESP.restart();
@@ -193,7 +203,7 @@ void setup() {
   // 连接Blynk
   display.clearDisplay();
   display.setCursor(0, 0);
-  display.println(F("连接Blynk..."));
+  display.println(F("Connecting Blynk..."));
   display.display();
   
   Blynk.config(BLYNK_AUTH_TOKEN);
@@ -216,12 +226,12 @@ void setup() {
   timer.setInterval(2000L, readSensor);      // 每2秒读取传感器
   timer.setInterval(1000L, updateDisplay);   // 每1秒更新显示
   timer.setInterval(5000L, controlDevices);  // 每5秒控制设备
-  timer.setInterval(1000L, handleButtons);   // 每1秒处理按键
+  timer.setInterval(50L, handleButtons);     // 每50ms处理按键（提高响应速度）
   timer.setInterval(5000L, updateBlynk);     // 每5秒更新Blynk
   
   display.clearDisplay();
   display.setCursor(0, 0);
-  display.println(F("系统就绪"));
+  display.println(F("System Ready"));
   display.print(F("IP: "));
   display.println(WiFi.localIP());
   display.display();
@@ -234,8 +244,13 @@ void loop() {
   timer.run();
   
   // 检查设置模式超时
-  if (currentMode != MODE_NORMAL && millis() > modeTimeout) {
+  if (currentMode != MODE_NORMAL && currentMode != MODE_SAVED && millis() > modeTimeout) {
     exitSettingMode();
+  }
+  
+  // 检查保存提示模式超时
+  if (currentMode == MODE_SAVED && millis() > savedModeTimeout) {
+    currentMode = MODE_NORMAL;
   }
 }
 
@@ -301,22 +316,36 @@ void updateDisplay() {
     drawGraph();
   } else if (currentMode == MODE_SET_TEMP) {
     // 设置温度模式
-    display.setTextSize(2);
-    display.setCursor(0, 20);
-    display.print(F("设置温度"));
+    display.setTextSize(1);
+    display.setCursor(0, 0);
+    display.print(F("Set Temperature"));
     display.setTextSize(3);
-    display.setCursor(30, 35);
+    display.setCursor(15, 25);
     display.print(targetTemp, 1);
     display.print(F("C"));
+    display.setTextSize(1);
+    display.setCursor(0, 55);
+    display.print(F("UP+  DOWN-  SET Next"));
   } else if (currentMode == MODE_SET_HUMIDITY) {
     // 设置湿度模式
-    display.setTextSize(2);
-    display.setCursor(0, 20);
-    display.print(F("设置湿度"));
+    display.setTextSize(1);
+    display.setCursor(0, 0);
+    display.print(F("Set Humidity"));
     display.setTextSize(3);
-    display.setCursor(30, 35);
+    display.setCursor(20, 25);
     display.print(targetHumidity, 0);
     display.print(F("%"));
+    display.setTextSize(1);
+    display.setCursor(0, 55);
+    display.print(F("UP+  DOWN-  SET Save"));
+  } else if (currentMode == MODE_SAVED) {
+    // 保存成功提示
+    display.setTextSize(2);
+    display.setCursor(25, 20);
+    display.print(F("Saved"));
+    display.setTextSize(1);
+    display.setCursor(15, 45);
+    display.print(F("Back to Normal"));
   }
   
   display.display();
@@ -453,64 +482,118 @@ void controlDevices() {
 
 // ========== 处理按键 ==========
 void handleButtons() {
+  // 跳过保存提示模式下的按键处理
+  if (currentMode == MODE_SAVED) {
+    return;
+  }
+  
   // 读取按键状态（低电平有效）
-  btnSetState = !digitalRead(BTN_SET_PIN);
-  btnUpState = !digitalRead(BTN_UP_PIN);
-  btnDownState = !digitalRead(BTN_DOWN_PIN);
+  bool currentBtnSet = !digitalRead(BTN_SET_PIN);
+  bool currentBtnUp = !digitalRead(BTN_UP_PIN);
+  bool currentBtnDown = !digitalRead(BTN_DOWN_PIN);
   
-  // 防抖处理
-  if (btnSetState != lastBtnSetState) {
-    lastDebounceTime = millis();
+  // 设置按键防抖处理
+  if (currentBtnSet != lastBtnSetState) {
+    lastDebounceTimeSet = millis();
   }
-  if (btnUpState != lastBtnUpState) {
-    lastDebounceTime = millis();
-  }
-  if (btnDownState != lastBtnDownState) {
-    lastDebounceTime = millis();
+  if ((millis() - lastDebounceTimeSet) > DEBOUNCE_DELAY) {
+    // 防抖时间已过，检查状态是否稳定
+    if (currentBtnSet != btnSetState) {
+      // 状态发生变化，检查是否是按下事件（从低到高）
+      if (currentBtnSet && !btnSetState) {
+        btnSetPressed = true;
+      }
+      btnSetState = currentBtnSet;
+    }
+    lastBtnSetState = btnSetState;
+  } else {
+    // 防抖中，保持上次状态
+    lastBtnSetState = currentBtnSet;
   }
   
-  if ((millis() - lastDebounceTime) > DEBOUNCE_DELAY) {
+  // 增加按键防抖处理
+  if (currentBtnUp != lastBtnUpState) {
+    lastDebounceTimeUp = millis();
+  }
+  if ((millis() - lastDebounceTimeUp) > DEBOUNCE_DELAY) {
+    if (currentBtnUp != btnUpState) {
+      if (currentBtnUp && !btnUpState) {
+        btnUpPressed = true;
+      }
+      btnUpState = currentBtnUp;
+    }
+    lastBtnUpState = btnUpState;
+  } else {
+    lastBtnUpState = currentBtnUp;
+  }
+  
+  // 减少按键防抖处理
+  if (currentBtnDown != lastBtnDownState) {
+    lastDebounceTimeDown = millis();
+  }
+  if ((millis() - lastDebounceTimeDown) > DEBOUNCE_DELAY) {
+    if (currentBtnDown != btnDownState) {
+      if (currentBtnDown && !btnDownState) {
+        btnDownPressed = true;
+      }
+      btnDownState = currentBtnDown;
+    }
+    lastBtnDownState = btnDownState;
+  } else {
+    lastBtnDownState = currentBtnDown;
+  }
+  
+  // 处理按键事件（只处理一次按下事件）
+  if (btnSetPressed) {
+    btnSetPressed = false;
     // 设置按键：切换设置模式
-    if (btnSetState && !lastBtnSetState) {
-      if (currentMode == MODE_NORMAL) {
-        enterSettingMode(MODE_SET_TEMP);
-      } else if (currentMode == MODE_SET_TEMP) {
-        enterSettingMode(MODE_SET_HUMIDITY);
-      } else if (currentMode == MODE_SET_HUMIDITY) {
-        exitSettingMode();
-      }
-    }
-    
-    // 增加按键
-    if (btnUpState && !lastBtnUpState) {
-      if (currentMode == MODE_SET_TEMP) {
-        targetTemp += 0.5;
-        if (targetTemp > 40) targetTemp = 40;
-        modeTimeout = millis() + MODE_TIMEOUT_MS;
-      } else if (currentMode == MODE_SET_HUMIDITY) {
-        targetHumidity += 5;
-        if (targetHumidity > 95) targetHumidity = 95;
-        modeTimeout = millis() + MODE_TIMEOUT_MS;
-      }
-    }
-    
-    // 减少按键
-    if (btnDownState && !lastBtnDownState) {
-      if (currentMode == MODE_SET_TEMP) {
-        targetTemp -= 0.5;
-        if (targetTemp < 10) targetTemp = 10;
-        modeTimeout = millis() + MODE_TIMEOUT_MS;
-      } else if (currentMode == MODE_SET_HUMIDITY) {
-        targetHumidity -= 5;
-        if (targetHumidity < 20) targetHumidity = 20;
-        modeTimeout = millis() + MODE_TIMEOUT_MS;
-      }
+    if (currentMode == MODE_NORMAL) {
+      enterSettingMode(MODE_SET_TEMP);
+      Serial.println("进入温度设置模式");
+    } else if (currentMode == MODE_SET_TEMP) {
+      enterSettingMode(MODE_SET_HUMIDITY);
+      Serial.println("进入湿度设置模式");
+    } else if (currentMode == MODE_SET_HUMIDITY) {
+      exitSettingMode();
+      Serial.println("保存设置并退出");
     }
   }
   
-  lastBtnSetState = btnSetState;
-  lastBtnUpState = btnUpState;
-  lastBtnDownState = btnDownState;
+  if (btnUpPressed) {
+    btnUpPressed = false;
+    // 增加按键
+    if (currentMode == MODE_SET_TEMP) {
+      targetTemp += 0.5;
+      if (targetTemp > 40) targetTemp = 40;
+      modeTimeout = millis() + MODE_TIMEOUT_MS;
+      Serial.print("设置温度: ");
+      Serial.println(targetTemp);
+    } else if (currentMode == MODE_SET_HUMIDITY) {
+      targetHumidity += 5;
+      if (targetHumidity > 95) targetHumidity = 95;
+      modeTimeout = millis() + MODE_TIMEOUT_MS;
+      Serial.print("设置湿度: ");
+      Serial.println(targetHumidity);
+    }
+  }
+  
+  if (btnDownPressed) {
+    btnDownPressed = false;
+    // 减少按键
+    if (currentMode == MODE_SET_TEMP) {
+      targetTemp -= 0.5;
+      if (targetTemp < 10) targetTemp = 10;
+      modeTimeout = millis() + MODE_TIMEOUT_MS;
+      Serial.print("设置温度: ");
+      Serial.println(targetTemp);
+    } else if (currentMode == MODE_SET_HUMIDITY) {
+      targetHumidity -= 5;
+      if (targetHumidity < 20) targetHumidity = 20;
+      modeTimeout = millis() + MODE_TIMEOUT_MS;
+      Serial.print("设置湿度: ");
+      Serial.println(targetHumidity);
+    }
+  }
 }
 
 // ========== 进入设置模式 ==========
@@ -521,10 +604,15 @@ void enterSettingMode(SettingMode mode) {
 
 // ========== 退出设置模式 ==========
 void exitSettingMode() {
-  currentMode = MODE_NORMAL;
   // 同步到Blynk
   Blynk.virtualWrite(V0, targetTemp);
   Blynk.virtualWrite(V1, targetHumidity);
+  
+  // 显示保存成功提示
+  currentMode = MODE_SAVED;
+  savedModeTimeout = millis() + SAVED_MODE_DURATION;
+  
+  Serial.println("设置已保存");
 }
 
 // ========== 更新Blynk ==========
