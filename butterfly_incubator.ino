@@ -9,7 +9,7 @@
 #define BLYNK_TEMPLATE_ID "TMPL6-RWgnQzO"
 #define BLYNK_TEMPLATE_NAME "Butterfly Incubator"
 #define BLYNK_DEVICE_NAME "ButterflyIncubator"
-#define BLYNK_AUTH_TOKEN "ygx5Lxn7vKw-1d2ZODzLS9NavCO5TyiJ"
+#define BLYNK_AUTH_TOKEN "your_auth_token"
 
 #include <WiFi.h>
 #include <WiFiManager.h>
